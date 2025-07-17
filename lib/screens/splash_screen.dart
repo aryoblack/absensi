@@ -34,7 +34,7 @@ class _SplashScreenState extends State<SplashScreen> {
             ),
             const SizedBox(height: 20),
             Text(
-              "ABSENSI APP",
+              "Pintu Kantor",
               style: TextStyle(
                 fontSize: 24,
                 color: Colors.white,

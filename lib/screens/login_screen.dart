@@ -18,11 +18,13 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   bool _obscurePassword = true;
   String _appVersion = '';
+  bool _checkingToken = true;
 
   @override
   void initState() {
     super.initState();
     _loadAppVersion();
+    _checkExistingToken();
   }
 
   Future<void> _loadAppVersion() async {
@@ -30,6 +32,39 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() {
       _appVersion = 'Versi ${info.version}+${info.buildNumber}';
     });
+  }
+
+  Future<void> _checkExistingToken() async {
+    try {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      String? token = prefs.getString('token');
+
+      if (token != null && token.isNotEmpty) {
+        // Token exists, navigate to HomeScreen
+        Navigator.pushReplacement(
+          context,
+          PageRouteBuilder(
+            transitionDuration: const Duration(milliseconds: 500),
+            pageBuilder: (_, __, ___) => const HomeScreen(),
+            transitionsBuilder: (_, animation, __, child) {
+              final tween = Tween(begin: const Offset(1.0, 0.0), end: Offset.zero)
+                  .chain(CurveTween(curve: Curves.ease));
+              return SlideTransition(position: animation.drive(tween), child: child);
+            },
+          ),
+        );
+      } else {
+        // No token found, show login form
+        setState(() {
+          _checkingToken = false;
+        });
+      }
+    } catch (e) {
+      print('Error checking token: $e');
+      setState(() {
+        _checkingToken = false;
+      });
+    }
   }
 
   @override
@@ -49,7 +84,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final response = await ApiService.login(username, password);
-      print('Response: $response');
+
       if (response['status'] == true) {
         SharedPreferences prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', response['token'] ?? '');
@@ -59,9 +94,14 @@ class _LoginScreenState extends State<LoginScreen> {
         await prefs.setString('username', data['username'] ?? '');
         await prefs.setString('nama', data['nama'] ?? '');
         await prefs.setString('role', data['role'] ?? '');
+        await prefs.setString('no_hp', data['no_hp'] ?? '');
+        await prefs.setString('email', data['email'] ?? '');
+        await prefs.setString('alamat', data['alamat'] ?? '');
+        await prefs.setString('profile_image', data['profile_image'] ?? '');
         await prefs.setString('latitude', data['latitude'] ?? '');
         await prefs.setString('longitude', data['longitude'] ?? '');
         await prefs.setString('radius_meter', data['radius_meter'] ?? '');
+
         Navigator.pushReplacement(
           context,
           PageRouteBuilder(
@@ -93,6 +133,18 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Show loading while checking token
+    if (_checkingToken) {
+      return Scaffold(
+        backgroundColor: Colors.teal.shade50,
+        body: const Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.teal),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.teal.shade50,
       body: Center(

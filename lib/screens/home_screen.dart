@@ -7,14 +7,19 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
+import '../services/notification_service.dart';
 import '../widgets/location_checker.dart';
 import '../widgets/success_istirahat_dialog.dart';
+import 'absen_reminder_setup.dart';
 import 'cuti_screen.dart';
 import 'izin_jam_screen.dart';
 import 'izin_harian_screen.dart';
 import 'AbsenHistoryScreen.dart';
 import 'absen_screen.dart';
 import 'gaji_screen.dart';
+import 'profile_screen.dart';
+import 'kunjungan_dinas_screen.dart';
+import 'upload_dokumen_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -39,7 +44,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   double? latkantor;
   double? lngkantor;
   double? maxradius;
-
+  bool _showFAB = true;
+  String? profileImageUrl;
   // Tambahan untuk countdown istirahat
   bool sedangIstirahat = false;
   DateTime? waktuMulaiIstirahat;
@@ -50,7 +56,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
-
+  int sisaCutiTahunan = 0;
+  String? grade;
   @override
   void initState() {
     super.initState();
@@ -70,17 +77,32 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     fetchLastAbsen();
     _checkIstirahatStatus();
     _animationController.forward();
+
+    // Initialize notification service
+    _initializeNotifications();
+
+    // Start daily check timer
+    NotificationService.startDailyCheckTimer();
   }
 
   @override
   void dispose() {
     _animationController.dispose();
     istirahatTimer?.cancel();
+    // Stop notification timer
+    NotificationService.stopDailyCheckTimer();
     super.dispose();
   }
 
   void _loadUserData() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
+    final _token = prefs.getString('token');
+    if (_token != null) {
+      final response = await ApiService().getSisaCuti(_token);
+      sisaCutiTahunan = response['data']['sisa_cuti_tahunan']! ?? 12;
+      grade = response['data']['grade']! ?? 'Grade';
+      print('Cek sisaCutiTahunan : $sisaCutiTahunan');
+    }
     setState(() {
       token = prefs.getString('token');
       name = prefs.getString('nama') ?? 'User';
@@ -88,13 +110,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       latkantor = double.parse(prefs.getString('latitude') ?? '0');
       lngkantor = double.parse(prefs.getString('longitude') ?? '0');
       maxradius = double.parse(prefs.getString('radius_meter') ?? '0');
+      profileImageUrl = prefs.getString('profile_image')! ??
+          "https://app.unchu.id/assets/media/upload/avatar-1.png";
+
     });
+
+
+
   }
 
   // Method untuk mengecek status istirahat dari SharedPreferences
   void _checkIstirahatStatus() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? waktuIstirahatStr = prefs.getString('waktu_mulai_istirahat');
+
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      String? waktuIstirahatStr = prefs.getString('waktu_mulai_istirahat');
+
+      final response = await ApiService.getIstirahat(token!);
+      if (response['status'] == true) {
+        waktuIstirahatStr = response['data']['waktu'];
+      }
 
     if (waktuIstirahatStr != null) {
       DateTime waktuMulai = DateTime.parse(waktuIstirahatStr);
@@ -115,7 +149,47 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       }
     }
   }
+  void _initializeNotifications() async {
+    await NotificationService.initialize();
 
+    // Check if user has notification permission
+    final hasPermission = await NotificationService.hasNotificationPermission();
+    if (!hasPermission) {
+      _showNotificationPermissionDialog();
+    } else {
+      // Schedule daily reminders
+      await NotificationService.scheduleDailyAbsenReminders();
+    }
+  }
+
+  void _showNotificationPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Izin Notifikasi'),
+        content: const Text(
+            'Aplikasi membutuhkan izin notifikasi untuk mengingatkan Anda tentang waktu absen. Apakah Anda ingin mengaktifkan notifikasi?'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Nanti'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final granted = await NotificationService.requestNotificationPermission();
+              if (granted) {
+                await NotificationService.scheduleDailyAbsenReminders();
+                _showSuccessSnackBar('Notifikasi pengingat telah diaktifkan');
+              }
+            },
+            child: const Text('Aktifkan'),
+          ),
+        ],
+      ),
+    );
+  }
   // Method untuk memulai timer countdown istirahat
   void _startIstirahatTimer() {
     istirahatTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -167,6 +241,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
     );
   }
+  DateTime? _parseDateTime(String? dateTimeString) {
+    if (dateTimeString == null || dateTimeString.isEmpty) {
+      return null;
+    }
+
+    try {
+      // Format dari API: "2025-07-01 16:34:13"
+      // Coba parse langsung terlebih dahulu
+      DateTime parsedDate = DateTime.parse(dateTimeString);
+      return parsedDate;
+    } catch (e) {
+      try {
+        // Jika gagal, coba dengan mengganti spasi dengan T
+        String isoFormat = dateTimeString.replaceFirst(' ', 'T');
+        DateTime parsedDate = DateTime.parse(isoFormat);
+        return parsedDate;
+      } catch (e2) {
+        try {
+          // Jika masih gagal, coba dengan DateFormat
+          DateFormat formatter = DateFormat('yyyy-MM-dd HH:mm:ss');
+          DateTime parsedDate = formatter.parse(dateTimeString);
+          return parsedDate;
+        } catch (e3) {
+          print('Error parsing datetime: $dateTimeString, Errors: $e, $e2, $e3');
+          return null;
+        }
+      }
+    }
+  }
+
 
   Future<void> fetchLastAbsen() async {
     setState(() {
@@ -182,10 +286,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       for (var absen in data) {
         final status = absen['status'];
         final waktu = absen['waktu'];
-        print('Cek Waktu :${absen['waktu']}');
-        final absenDate = DateTime.parse(waktu);
+        DateTime? absenDate = _parseDateTime(waktu.toString());
         final now = DateTime.now();
-        final sameDay = absenDate.year == now.year && absenDate.month == now.month && absenDate.day == now.day;
+        final sameDay = absenDate?.year == now.year && absenDate?.month == now.month && absenDate?.day == now.day;
 
         if (sameDay) {
           if (status == 'Masuk') {
@@ -200,6 +303,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           }
         }
       }
+      // await NotificationService.updateAbsenStatus(
+      //   sudahMasuk: sudahMasuk,
+      //   sudahKeluar: sudahKeluar,
+      // );
     }
     setState(() {});
   }
@@ -212,6 +319,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     if (result == 'success') {
       fetchLastAbsen();
+
+      if (!sudahMasuk) {
+        _showSuccessSnackBar('Absen masuk berhasil! Selamat bekerja 💪');
+      } else if (!sudahKeluar) {
+        _showSuccessSnackBar('Absen keluar berhasil! Selamat beristirahat 🌙');
+      }
     }
   }
 
@@ -230,7 +343,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _showWarningSnackBar('Anda sedang dalam periode istirahat');
       return;
     }
-
+    if (sudahMasuk && sudahKeluar) {
+      _showErrorSnackBar('Anda sudah melakukan absen masuk dan pulang');
+      return;
+    }
     _confirmIstirahat();
   }
 
@@ -267,44 +383,182 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
     );
   }
-
+  void _showSuccessSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle_outline, color: Colors.white),
+            const SizedBox(width: 8),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: Colors.green.shade600,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
   void _confirmIstirahat() {
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.orange.shade100,
-                borderRadius: BorderRadius.circular(12),
+      builder: (_) => LayoutBuilder(
+        builder: (context, constraints) {
+          final isSmallScreen = constraints.maxWidth < 600;
+          final screenWidth = MediaQuery.of(context).size.width;
+          final screenHeight = MediaQuery.of(context).size.height;
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(isSmallScreen ? 16 : 20)
+            ),
+            insetPadding: EdgeInsets.symmetric(
+              horizontal: screenWidth * 0.05,
+              vertical: screenHeight * 0.1,
+            ),
+            contentPadding: EdgeInsets.all(isSmallScreen ? 16.0 : 24.0),
+            titlePadding: EdgeInsets.fromLTRB(
+              isSmallScreen ? 16.0 : 24.0,
+              isSmallScreen ? 16.0 : 24.0,
+              isSmallScreen ? 16.0 : 24.0,
+              8.0,
+            ),
+            actionsPadding: EdgeInsets.fromLTRB(
+              isSmallScreen ? 16.0 : 24.0,
+              8.0,
+              isSmallScreen ? 16.0 : 24.0,
+              isSmallScreen ? 16.0 : 24.0,
+            ),
+            title: Row(
+              children: [
+                Container(
+                  padding: EdgeInsets.all(isSmallScreen ? 6 : 8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade100,
+                    borderRadius: BorderRadius.circular(isSmallScreen ? 10 : 12),
+                  ),
+                  child: Icon(
+                    Icons.local_cafe,
+                    color: Colors.orange.shade700,
+                    size: isSmallScreen ? 20 : 24,
+                  ),
+                ),
+                SizedBox(width: isSmallScreen ? 8 : 12),
+                Expanded(
+                  child: Text(
+                    'Konfirmasi Istirahat',
+                    style: TextStyle(
+                      fontSize: isSmallScreen ? 16 : 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            content: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: isSmallScreen ? double.infinity : 400,
               ),
-              child: Icon(Icons.local_cafe, color: Colors.orange.shade700, size: 24),
+              child: Text(
+                'Apakah Anda yakin ingin mulai istirahat?\n\nWaktu istirahat adalah 1 jam.',
+                style: TextStyle(
+                  fontSize: isSmallScreen ? 14 : 16,
+                  height: 1.4,
+                ),
+              ),
             ),
-            const SizedBox(width: 12),
-            const Text('Konfirmasi Istirahat'),
-          ],
-        ),
-        content: const Text('Apakah Anda yakin ingin mulai istirahat?\n\nWaktu istirahat adalah 1 jam.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Batal', style: TextStyle(color: Colors.grey.shade600)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _submitIstirahat();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            child: const Text('Ya, Istirahat', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+            actions: [
+              if (isSmallScreen)
+              // Stack buttons vertically on small screens
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: Text(
+                        'Batal',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _submitIstirahat();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text(
+                        'Ya, Istirahat',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              else
+              // Keep buttons horizontal on larger screens
+                ...[
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                    ),
+                    child: Text(
+                      'Batal',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _submitIstirahat();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.orange,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                    ),
+                    child: const Text(
+                      'Ya, Istirahat',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+            ],
+          );
+        },
       ),
     );
   }
@@ -320,6 +574,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       DateTime sekarang = DateTime.now();
       await prefs.setString('waktu_mulai_istirahat', sekarang.toIso8601String());
 
+      final String? token = prefs.getString('token');
+
+      final response = await ApiService.submitIstirahat(
+        token: '$token',
+      );
+      print('Cek Response : $response');
+      if (response['status'] == true) {
       setState(() {
         _checking = false;
         sedangIstirahat = true;
@@ -329,6 +590,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
       _startIstirahatTimer();
       SuccessIstirahatDialog.show(context);
+      } else {
+        setState(() {
+          _checking = false;
+        });
+        _showErrorSnackBar('Terjadi kesalahan saat mencatat istirahat');
+      }
 
     } catch (e) {
       setState(() {
@@ -348,44 +615,203 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           (Route<dynamic> route) => false,
     );
   }
+// Method untuk mengecek apakah perlu menampilkan FAB
+  bool _shouldShowFAB() {
+    final now = DateTime.now();
+    final hour = now.hour;
 
+    // Tampilkan FAB jika:
+    // 1. Jam kerja (08:00 - 17:00)
+    // 2. Belum absen masuk DAN bukan sedang istirahat
+    // 3. Sudah absen masuk tapi belum pulang DAN bukan sedang istirahat
+    if (hour >= 8 && hour <= 17) {
+      if (!sudahMasuk && !sedangIstirahat) {
+        return true; // Belum absen masuk
+      } else if (sudahMasuk && !sudahKeluar && !sedangIstirahat) {
+        return true; // Sudah masuk tapi belum pulang
+      }
+    }
+    return true;
+  }
+
+// Method untuk mendapatkan teks FAB
+  String _getFABText() {
+    if (!sudahMasuk) {
+      return 'Absen Masuk';
+    } else if (sudahMasuk && !sudahKeluar) {
+      return 'Absen Pulang';
+    }
+    return 'Absen';
+  }
+
+// Method untuk mendapatkan icon FAB
+  IconData _getFABIcon() {
+    if (!sudahMasuk) {
+      return Icons.login;
+    } else if (sudahMasuk && !sudahKeluar) {
+      return Icons.logout;
+    }
+    return Icons.camera_alt;
+  }
   void _confirmLogout() {
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.red.shade100,
-                borderRadius: BorderRadius.circular(12),
+      builder: (_) => LayoutBuilder(
+        builder: (context, constraints) {
+          final isSmallScreen = constraints.maxWidth < 600;
+          final screenWidth = MediaQuery.of(context).size.width;
+          final screenHeight = MediaQuery.of(context).size.height;
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(isSmallScreen ? 16 : 20)
+            ),
+            insetPadding: EdgeInsets.symmetric(
+              horizontal: screenWidth * 0.05,
+              vertical: screenHeight * 0.1,
+            ),
+            contentPadding: EdgeInsets.all(isSmallScreen ? 16.0 : 24.0),
+            titlePadding: EdgeInsets.fromLTRB(
+              isSmallScreen ? 16.0 : 24.0,
+              isSmallScreen ? 16.0 : 24.0,
+              isSmallScreen ? 16.0 : 24.0,
+              8.0,
+            ),
+            actionsPadding: EdgeInsets.fromLTRB(
+              isSmallScreen ? 16.0 : 24.0,
+              8.0,
+              isSmallScreen ? 16.0 : 24.0,
+              isSmallScreen ? 16.0 : 24.0,
+            ),
+            title: Row(
+              children: [
+                Container(
+                  padding: EdgeInsets.all(isSmallScreen ? 6 : 8),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade100,
+                    borderRadius: BorderRadius.circular(isSmallScreen ? 10 : 12),
+                  ),
+                  child: Icon(
+                    Icons.logout,
+                    color: Colors.red.shade700,
+                    size: isSmallScreen ? 20 : 24,
+                  ),
+                ),
+                SizedBox(width: isSmallScreen ? 8 : 12),
+                Expanded(
+                  child: Text(
+                    'Konfirmasi Logout',
+                    style: TextStyle(
+                      fontSize: isSmallScreen ? 16 : 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            content: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: isSmallScreen ? double.infinity : 400,
               ),
-              child: Icon(Icons.logout, color: Colors.red.shade700, size: 24),
+              child: Text(
+                'Yakin ingin keluar dari aplikasi?',
+                style: TextStyle(
+                  fontSize: isSmallScreen ? 14 : 16,
+                  height: 1.4,
+                ),
+              ),
             ),
-            const SizedBox(width: 12),
-            const Text('Konfirmasi Logout'),
-          ],
-        ),
-        content: const Text('Yakin ingin keluar dari aplikasi?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Batal', style: TextStyle(color: Colors.grey.shade600)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _logout();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            child: const Text('Logout', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+            actions: [
+              if (isSmallScreen)
+              // Stack buttons vertically on small screens
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: Text(
+                        'Batal',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _logout();
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text(
+                        'Logout',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              else
+              // Keep buttons horizontal on larger screens
+                ...[
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                    ),
+                    child: Text(
+                      'Batal',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _logout();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                    ),
+                    child: const Text(
+                      'Logout',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+            ],
+          );
+        },
       ),
     );
   }
@@ -535,7 +961,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
     );
   }
-
   Widget _buildStatusCard() {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 16),
@@ -561,6 +986,71 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
+            // Company Logo and Name Section
+            Container(
+              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: Colors.white.withOpacity(0.2),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Company Logo
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Image.asset(
+                      'assets/images/company_logo.png', // Replace with your logo path
+                      width: 24,
+                      height: 24,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // Company Name
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'PT. UNCHU INDONESIA GROUP', // Replace with your company name
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        'TUMBUH BERMANFAAT LUAR BIASA',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.8),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            // User Greeting Section
             Row(
               children: [
                 Container(
@@ -613,6 +1103,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ],
             ),
             const SizedBox(height: 16),
+
+            // Status Tiles Section
             Row(
               children: [
                 Expanded(child: _buildStatusTile(Icons.login, 'Masuk', sudahMasuk, waktuMasuk)),
@@ -628,6 +1120,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
+
   String _getGreeting() {
     final hour = DateTime.now().hour;
     if (hour < 12) return 'Pagi';
@@ -637,6 +1130,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildStatusTile(IconData icon, String label, bool status, String? time) {
+
+
+    // Calculate display time and active state
+    final isActive = status || (sedangIstirahat && label == 'Istirahat');
+    final displayTime = _getDisplayTime(status, time, label);
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -650,41 +1149,78 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: status ? Colors.green.withOpacity(0.2) : Colors.white.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              icon,
-              size: 18,
-              color: status ? Colors.green.shade300 : Colors.white60,
-            ),
-          ),
+          _buildIconContainer(icon, isActive),
           const SizedBox(height: 6),
-          Text(
-            status && time != null ? DateFormat('HH:mm').format(DateTime.parse(time)) :
-            (sedangIstirahat && label == 'Istirahat' && waktuMulaiIstirahat != null ?
-            DateFormat('HH:mm').format(waktuMulaiIstirahat!) : '--:--'),
-            style: TextStyle(
-              color: status || (sedangIstirahat && label == 'Istirahat') ? Colors.green.shade300 : Colors.white60,
-              fontWeight: FontWeight.bold,
-              fontSize: 12,
-            ),
-          ),
+          _buildTimeText(displayTime, isActive),
           const SizedBox(height: 2),
-          Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white70,
-              fontSize: 10,
-            ),
-            overflow: TextOverflow.ellipsis,
-          ),
+          _buildLabelText(label),
         ],
       ),
     );
+  }
+
+  Widget _buildIconContainer(IconData icon, bool isActive) {
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: isActive
+            ? Colors.green.withOpacity(0.2)
+            : Colors.white.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(
+        icon,
+        size: 18,
+        color: isActive ? Colors.green.shade300 : Colors.white60,
+      ),
+    );
+  }
+
+  Widget _buildTimeText(String displayTime, bool isActive) {
+    return Text(
+      displayTime,
+      style: TextStyle(
+        color: isActive ? Colors.green.shade300 : Colors.white60,
+        fontWeight: FontWeight.bold,
+        fontSize: 12,
+      ),
+    );
+  }
+
+  Widget _buildLabelText(String label) {
+    return Text(
+      label,
+      style: const TextStyle(
+        color: Colors.white70,
+        fontSize: 10,
+      ),
+      overflow: TextOverflow.ellipsis,
+      maxLines: 1,
+    );
+  }
+
+  String _getDisplayTime(bool status, String? time, String label) {
+    if (status && time != null && time != 'null' && time.isNotEmpty) {
+      try {
+        // Parse waktu dari string
+        DateTime? parsedTime = _parseDateTime(time);
+        if (parsedTime != null) {
+          return DateFormat('HH:mm:ss').format(parsedTime);
+        } else {
+          print('Failed to parse time for display: $time');
+          return '--:--';
+        }
+      } catch (e) {
+        print('Error formatting time for display: $e, time: $time');
+        return '--:--';
+      }
+    }
+
+    if (sedangIstirahat && label == 'Istirahat' && waktuMulaiIstirahat != null) {
+      return DateFormat('HH:mm:ss').format(waktuMulaiIstirahat!);
+    }
+
+    return '--:--';
   }
 
   Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap, {Color? iconColor, Color? backgroundColor}) {
@@ -817,7 +1353,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
-    String imageUrl = "https://app.unchu.id/assets/media/upload/avatar-1.png";
+
+    String imageUrl = profileImageUrl!;
 
     final List<Map<String, dynamic>> menuItems = [
       {
@@ -854,6 +1391,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         'onTap': () => Navigator.push(context, MaterialPageRoute(builder: (_) => const IzinHarianList())),
         'color': Colors.green,
         'bgColor': Colors.green.shade50,
+      },
+      {
+        'icon': Icons.business_center,
+        'label': 'Kunjungan Dinas',
+        'onTap': () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KunjunganDinasScreen())),
+        'color': Colors.teal,
+        'bgColor': Colors.teal.shade50,
+      },
+      {
+        'icon': Icons.upload_file,
+        'label': 'Upload Dokumen',
+        'onTap': () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UploadDokumenScreen())),
+        'color': Colors.brown,
+        'bgColor': Colors.brown.shade50,
       },
       {
         'icon': Icons.assignment,
@@ -923,7 +1474,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           backgroundColor: Colors.white,
           foregroundColor: Colors.black87,
           elevation: 0,
-          centerTitle: true,
+          centerTitle: false,
           titleTextStyle: const TextStyle(
             color: Colors.black87,
             fontSize: 20,
@@ -933,48 +1484,140 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           actions: [
             Padding(
               padding: const EdgeInsets.only(right: 16),
-              child: Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.teal.shade200, width: 2),
-                ),
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundImage: NetworkImage(imageUrl),
-                  child: PopupMenuButton<String>(
-                    onSelected: (value) {
-                      if (value == 'logout') {
-                        _confirmLogout();
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(
-                        value: 'profile',
-                        child: Row(
-                          children: [
-                            Icon(Icons.person, size: 20),
-                            SizedBox(width: 8),
-                            Text('Profil'),
-                          ],
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Profile Avatar with PopupMenu
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.teal.shade200, width: 2),
+                    ),
+                    child: CircleAvatar(
+                      radius: 16,
+                      backgroundImage: NetworkImage(imageUrl),
+                      child: PopupMenuButton<String>(
+                        onSelected: (value) {
+                          if (value == 'logout') {
+                            _confirmLogout();
+                          } else if (value == 'profile') {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                            );
+                          } else if (value == 'notif') {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => AbsenReminderScreen()),
+                            );
+                          }
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: 'profile',
+                            child: Row(
+                              children: [
+                                Icon(Icons.person, size: 20, color: Colors.teal),
+                                SizedBox(width: 8),
+                                Text('Profil'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'notif',
+                            child: Row(
+                              children: [
+                                Icon(Icons.notifications, size: 20, color: Colors.amber),
+                                SizedBox(width: 8),
+                                Text('Notifikasi'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'logout',
+                            child: Row(
+                              children: [
+                                Icon(Icons.logout, size: 20, color: Colors.red),
+                                SizedBox(width: 8),
+                                Text('Logout'),
+                              ],
+                            ),
+                          ),
+                        ],
+                        child: Container(
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.teal.shade200, width: 2),
+                          ),
+                          child: ClipOval(
+                            child: Image.network(
+                              imageUrl,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  color: Colors.grey.shade200,
+                                  child: Icon(
+                                    Icons.person,
+                                    color: Colors.teal,
+                                    size: 18,
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
                         ),
                       ),
-                      const PopupMenuItem(
-                        value: 'logout',
-                        child: Row(
-                          children: [
-                            Icon(Icons.logout, size: 20),
-                            SizedBox(width: 8),
-                            Text('Logout'),
-                          ],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  // Info badges in a row, centered below avatar
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.shade50,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.teal.shade200, width: 0.5),
+                        ),
+                        child: Text(
+                          'Kuota Cuti: ${sisaCutiTahunan ?? 0}',
+                          style: TextStyle(
+                            color: Colors.teal.shade700,
+                            fontSize: 8,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.shade50,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.teal.shade200, width: 0.5),
+                        ),
+                        child: Text(
+                          '${grade ?? 'Grade'}',
+                          style: TextStyle(
+                            color: Colors.teal.shade700,
+                            fontSize: 8,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ),
                     ],
                   ),
-                ),
+                ],
               ),
-            )
+            ),
           ],
         ),
+
         body: _checking
             ? Container(
           decoration: BoxDecoration(
@@ -1099,7 +1742,59 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ],
         ),
+        floatingActionButton:  _showFAB
+            ? Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.teal.withOpacity(0.3),
+                blurRadius: 12,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: FloatingActionButton.extended(
+            onPressed: _absen,
+            backgroundColor: sudahMasuk
+                ? Colors.green
+                : sudahKeluar
+                ? Colors.red
+                : Colors.teal,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            icon: Icon(_getFABIcon(), size: 20),
+            label: Text(
+              _getFABText(),
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        )
+            : null,
+        floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       ),
     );
+
+  }
+  // Optional: Method untuk menyembunyikan FAB sementara
+  void _hideFABTemporarily() {
+    setState(() {
+      _showFAB = false;
+    });
+
+    // Tampilkan kembali setelah 10 detik
+    Timer(const Duration(seconds: 10), () {
+      if (mounted) {
+        setState(() {
+          _showFAB = true;
+        });
+      }
+    });
   }
 }

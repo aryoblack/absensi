@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
-
+import 'package:shared_preferences/shared_preferences.dart';
 import '../model/slip_gaji.dart';
 
 class ApiService {
@@ -185,7 +185,7 @@ class ApiService {
   static Future<List<dynamic>> getDivisiList(String token) async {
     final response = await http.get(
       Uri.parse('$_baseUrl/get_divisi'),
-      headers: {'Authorization': 'Bearer $token'},
+      headers: {'Authorization': '$token'},
     );
     if (response.statusCode == 200) {
       return json.decode(response.body);
@@ -197,7 +197,7 @@ class ApiService {
   static Future<List<dynamic>> getJabatanList(String token) async {
     final response = await http.get(
       Uri.parse('$_baseUrl/get_jabatan'), // Ganti dengan URL-mu
-      headers: {'Authorization': 'Bearer $token'},
+      headers: {'Authorization': '$token'},
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body); // langsung karena JSON kamu berupa List
@@ -381,7 +381,7 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> submitIstirahat(String token) async {
+  static Future<Map<String, dynamic>> submitIstirahat({required String token}) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/istirahat'), // Sesuaikan dengan endpoint API Anda
@@ -445,7 +445,6 @@ class ApiService {
           'Accept': 'application/json',
         },
       );
-print('Cek Slip Gaji : '+response.body);
       if (response.statusCode == 200) {
         final Map<String, dynamic> jsonResponse = json.decode(response.body);
 
@@ -458,6 +457,239 @@ print('Cek Slip Gaji : '+response.body);
       }
     } catch (e) {
       throw Exception('Network Error: $e');
+    }
+  }
+
+  Future<Map<String, dynamic>> getSisaCuti(String token) async {
+    try {
+      // Replace with your actual API endpoint
+      const String apiUrl = '$_baseUrl/get_sisa_cuti';
+
+      final response = await http.get(
+        Uri.parse(apiUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': '$token',
+          // Add other headers if needed
+          'Accept': 'application/json',
+        },
+      );
+print('Cek Sisa Cuti : '+response.body);
+      if (response.statusCode == 200) {
+        // Parse the JSON response
+        final  data = json.decode(response.body);
+        return data;
+      } else if (response.statusCode == 401) {
+        throw Exception('Token tidak valid atau sudah expired');
+      } else if (response.statusCode == 403) {
+        throw Exception('Tidak memiliki akses untuk melihat data cuti');
+      } else if (response.statusCode == 404) {
+        throw Exception('Endpoint tidak ditemukan');
+      } else {
+        throw Exception('Gagal mengambil data sisa cuti: ${response.statusCode}');
+      }
+    } catch (e) {
+      if (e is http.ClientException) {
+        throw Exception('Koneksi gagal: Periksa koneksi internet Anda');
+      } else {
+        throw Exception('Error: ${e.toString()}');
+      }
+    }
+  }
+  static Future<Map<String, dynamic>> uploadProfileImage(String token, File image) async {
+    final url = Uri.parse('$_baseUrl/upload_image');
+
+
+    final request = http.MultipartRequest('POST', url)
+      ..headers['Authorization'] = token
+      ..files.add(await http.MultipartFile.fromPath('profile_image', image.path));
+
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    print('Cek Upload : '+ response.body);
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      return {'status': false, 'message': 'Upload gagal'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getIstirahat(String token) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/istirahat'), // Sesuaikan dengan endpoint API Anda
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': '$token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        return {
+          'status': false,
+          'message': 'Gagal mendapatkan data istirahat . Status code: ${response.statusCode}'
+        };
+      }
+    } catch (e) {
+      return {
+        'status': false,
+        'message': 'Error: $e'
+      };
+    }
+  }
+
+  // Submit pengajuan kunjungan dinas
+  static Future<Map<String, dynamic>> submitKunjungan({
+  required String tujuan,
+  required String lokasi,
+  required String kepentingan,
+  required String tanggalMulai,
+  required String tanggalSelesai,
+  String? jamMulai,
+  String? jamSelesai,
+  String? keterangan,
+  String? token,
+  }) async {
+
+    final response = await http.post(
+      Uri.parse('$_baseUrl/tambah_kunjungan'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': '$token',
+      },
+      body: jsonEncode({
+        'tujuan': tujuan,
+        'lokasi': lokasi,
+        'kepentingan': kepentingan,
+        'tanggal_mulai': tanggalMulai,
+        'tanggal_selesai': tanggalSelesai,
+        'jam_mulai': jamMulai,
+        'jam_selesai': jamSelesai,
+        'keterangan': keterangan,
+      }),
+    );
+
+    return json.decode(response.body);
+  }
+
+  // Get riwayat kunjungan dinas
+  static Future<Map<String, dynamic>> getRiwayatKunjungan({
+  String? token,
+  int? page,
+  int? limit,
+  String? status,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/riwayat_kunjungan'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': '$token',
+      },
+      body: jsonEncode({
+        'page': page,
+        'limit': limit,
+        'status': status,
+      }),
+    );
+
+    return json.decode(response.body);
+  }
+
+  // Get detail kunjungan dinas
+  static Future<Map<String, dynamic>> getDetailKunjungan(
+  String id, {
+  String? token,
+  }) async {
+  final response = await http.get(
+  Uri.parse('$_baseUrl/kunjungan/$id'),
+  headers: {
+  'Content-Type': 'application/json',
+  'Authorization': '$token',
+  },
+  );
+  return json.decode(response.body);
+  }
+
+  // Update status kunjungan (untuk admin)
+  static Future<Map<String, dynamic>> updateStatusKunjungan(
+  String id,
+  String status, {
+  String? catatan,
+  String? token,
+  }) async {
+  final response = await http.post(
+  Uri.parse('$_baseUrl/update_status_kunjungan'),
+  headers: {
+  'Content-Type': 'application/json',
+  'Authorization': '$token',
+  },
+  body: jsonEncode({
+    'id': id,
+  'status': status,
+  'catatan': catatan,
+  }),
+  );
+  return json.decode(response.body);
+  }
+
+
+  // Cancel pengajuan kunjungan
+  static Future<Map<String, dynamic>> cancelKunjungan(
+  String id, {
+  String? token,
+  }) async {
+  final response = await http.post(
+  Uri.parse('$_baseUrl/cancel_kunjungan'),
+  headers: {
+  'Content-Type': 'application/json',
+  'Authorization': '$token',
+  },
+  body: jsonEncode({
+  'id': id,
+  }),
+  );
+  return json.decode(response.body);
+  }
+
+  // Get dashboard statistics (untuk admin)
+  static Future<Map<String, dynamic>> getDashboardStats({
+  String? token,
+  }) async {
+    final response = await http.get(
+  Uri.parse('$_baseUrl/dashboard_stats'),
+  headers: {
+  'Content-Type': 'application/json',
+  'Authorization': '$token',
+  },
+  );
+  return json.decode(response.body);
+  }
+  static Future<Map<String, dynamic>> uploadDocument(String token, File ktp, File npwp, File kk, File ijazah) async {
+    final url = Uri.parse('$_baseUrl/upload_documents');
+    final request = http.MultipartRequest('POST', url)
+      ..headers['Authorization'] = token;
+    if (ktp != null) {
+      request.files.add(await http.MultipartFile.fromPath('ktp', ktp.path));
+    }
+    if (ijazah != null) {
+      request.files.add(await http.MultipartFile.fromPath('ijazah', ijazah.path));
+    }
+    if (npwp != null) {
+      request.files.add(await http.MultipartFile.fromPath('npwp', npwp.path));
+    }
+    if (kk != null) {
+      request.files.add(await http.MultipartFile.fromPath('kk', kk.path));
+    }
+
+
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    if (response.statusCode == 200) {
+      return json.decode(response.body);
+    } else {
+      return {'status': false, 'message': 'Upload gagal'};
     }
   }
 }

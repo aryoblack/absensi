@@ -40,13 +40,17 @@ dependencies:
   google_fonts: ^6.1.0
   permission_handler: ^12.0.0+1
   intl: ^0.20.2
-#  flutter_image_compress: ^2.1.0
+  flutter_image_compress: ^2.1.0
   package_info_plus: ^8.3.0
   google_maps_flutter: ^2.12.3
   dropdown_search: ^5.0.2
   flutter_launcher_icons: ^0.13.1
   lottie: ^3.1.0
   pdf: ^3.8.4
+  flutter_local_notifications: ^19.3.0
+  timezone: ^0.10.1
+  workmanager: ^0.8.0
+  file_picker: ^10.2.0
 
 dev_dependencies:
   flutter_test:
@@ -62,7 +66,7 @@ dev_dependencies:
 flutter_icons:
   android: true
   ios: true
-  image_path: "assets/logo.png"
+  image_path: "assets/images/company_logo.png"
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
@@ -76,6 +80,7 @@ flutter:
   assets:
     - assets/logo.png
     - assets/lottie/Lottie_Lego.json
+    - assets/images/company_logo.png
 
 
   # To add assets to your application, add an assets section, like this:
